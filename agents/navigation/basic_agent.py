@@ -123,7 +123,10 @@ class BasicAgent(object):
         ]
 
         """
-        sensors = []
+        sensors = [
+            {'type': 'sensor.camera.rgb', 'x': 2.0, 'y': 5.0, 'z': 1.60, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0,
+                      'width': 700, 'height': 700, 'fov': 100, 'id': 'Right'},
+        ]
 
         return sensors
 
