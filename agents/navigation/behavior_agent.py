@@ -56,6 +56,10 @@ class BehaviorAgent(BasicAgent):
         self._behavior = None
         self._sampling_resolution = 4.5
 
+        self.bound_x = vehicle.bounding_box.extent.x
+        self.bound_y = vehicle.bounding_box.extent.y
+        self.bound_z = vehicle.bounding_box.extent.z
+
         # Parameters for agent behavior
         if behavior == 'cautious':
             self._behavior = Cautious()
@@ -72,14 +76,22 @@ class BehaviorAgent(BasicAgent):
         # Evaluate detection results
         self.result_stat = {0.3: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
                             0.5: {'tp': [], 'fp': [], 'gt': 0, 'score': []},                
-                            0.7: {'tp': [], 'fp': [], 'gt': 0, 'score': []}}
+                            0.7: {'tp': [], 'fp': [], 'gt': 0, 'score': []}}\
+        
+        # Bounding boxes
+        self.bbox = {}
 
     def destroy(self):
         eval_final_results(self.result_stat, global_sort_detections=True)
         
 
     def sensors(self):  # pylint: disable=no-self-use
-        return self._detector.sensors()
+        sensors = self._detector.sensors()
+        for s in sensors:
+            s['x'] = s['x']*self.bound_x
+            s['y'] = s['y']*self.bound_y
+            s['z'] = s['z']*self.bound_z
+        return sensors
     
     def _update_information(self):
         """
@@ -356,6 +368,14 @@ class BehaviorAgent(BasicAgent):
             det_boxes = detections["det_boxes"]
         if "det_score" in detections:
             det_score = detections["det_score"]
+        
+        frame_number = next(iter(sensor_data.values()))[0]
+
+        self.bbox = {
+            'frame':frame_number,
+            'gt_det':gt_detections,
+            'det':detections
+        }
             
         caluclate_tp_fp(det_boxes, det_score, gt_detections["det_boxes"], self.result_stat, iou_thresh=0.3)
         caluclate_tp_fp(det_boxes, det_score, gt_detections["det_boxes"], self.result_stat, iou_thresh=0.5)

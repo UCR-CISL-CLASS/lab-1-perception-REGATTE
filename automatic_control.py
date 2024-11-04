@@ -27,6 +27,7 @@ try:
     from pygame.locals import KMOD_CTRL
     from pygame.locals import K_ESCAPE
     from pygame.locals import K_q
+    from pygame.locals import K_TAB
 except ImportError:
     raise RuntimeError('cannot import pygame, make sure pygame package is installed')
 
@@ -63,7 +64,9 @@ from agents.navigation.basic_agent import BasicAgent  # pylint: disable=import-e
 from agents.navigation.constant_velocity_agent import ConstantVelocityAgent  # pylint: disable=import-error
 from agents.navigation.agent_wrapper import AgentWrapper  # pylint: disable=import-error
 
-
+from utils.transform import Transform
+from utils.pygame_drawing import PyGameDrawing
+import pdb
 # ==============================================================================
 # -- Global functions ----------------------------------------------------------
 # ==============================================================================
@@ -143,7 +146,7 @@ class World(object):
         """Restart the world"""
         # Keep same camera config if the camera manager exists.
         cam_index = self.camera_manager.index if self.camera_manager is not None else 0
-        cam_pos_id = self.camera_manager.transform_index if self.camera_manager is not None else 0
+        cam_pos_id = cam_index
 
         # Get a random blueprint.
         blueprint_list = get_actor_blueprints(self.world, self._actor_filter, self._actor_generation)
@@ -184,7 +187,7 @@ class World(object):
         self.lane_invasion_sensor = LaneInvasionSensor(self.player, self.hud)
         self.gnss_sensor = GnssSensor(self.player)
         self.camera_manager = CameraManager(self.player, self.hud)
-        self.camera_manager.transform_index = cam_pos_id
+        # self.camera_manager.transform_index = cam_pos_id
         self.camera_manager.set_sensor(cam_index, notify=False)
         actor_type = get_actor_display_name(self.player)
         self.hud.notification(actor_type)
@@ -243,13 +246,15 @@ class KeyboardControl(object):
     def __init__(self, world):
         world.hud.notification("Press 'H' or '?' for help.", seconds=4.0)
 
-    def parse_events(self):
+    def parse_events(self, world):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return True
             if event.type == pygame.KEYUP:
                 if self._is_quit_shortcut(event.key):
                     return True
+                elif event.key == K_TAB:
+                    world.camera_manager.toggle_camera()
 
     @staticmethod
     def _is_quit_shortcut(key):
@@ -601,21 +606,23 @@ class CameraManager(object):
         attachment = carla.AttachmentType
         self._camera_transforms = [
             (carla.Transform(carla.Location(x=-2.0*bound_x, y=+0.0*bound_y, z=2.0*bound_z), carla.Rotation(pitch=8.0)), attachment.SpringArmGhost),
-            (carla.Transform(carla.Location(x=+0.8*bound_x, y=+0.0*bound_y, z=1.3*bound_z)), attachment.Rigid),
-            (carla.Transform(carla.Location(x=+1.9*bound_x, y=+1.0*bound_y, z=1.2*bound_z)), attachment.SpringArmGhost),
-            (carla.Transform(carla.Location(x=-2.8*bound_x, y=+0.0*bound_y, z=4.6*bound_z), carla.Rotation(pitch=6.0)), attachment.SpringArmGhost),
-            (carla.Transform(carla.Location(x=-1.0, y=-1.0*bound_y, z=0.4*bound_z)), attachment.Rigid)]
+            # (carla.Transform(carla.Location(x=+0.8*bound_x, y=+0.0*bound_y, z=1.3*bound_z)), attachment.Rigid),
+            # (carla.Transform(carla.Location(x=+1.9*bound_x, y=+1.0*bound_y, z=1.2*bound_z)), attachment.SpringArmGhost),
+            # (carla.Transform(carla.Location(x=-2.8*bound_x, y=+0.0*bound_y, z=4.6*bound_z), carla.Rotation(pitch=6.0)), attachment.SpringArmGhost),
+            # (carla.Transform(carla.Location(x=-1.0, y=-1.0*bound_y, z=0.4*bound_z)), attachment.Rigid),
+            ]
 
-        self.transform_index = 1
+        # self.transform_index = 1
         self.sensors = [
             ['sensor.camera.rgb', cc.Raw, 'Camera RGB'],
-            ['sensor.camera.depth', cc.Raw, 'Camera Depth (Raw)'],
-            ['sensor.camera.depth', cc.Depth, 'Camera Depth (Gray Scale)'],
-            ['sensor.camera.depth', cc.LogarithmicDepth, 'Camera Depth (Logarithmic Gray Scale)'],
-            ['sensor.camera.semantic_segmentation', cc.Raw, 'Camera Semantic Segmentation (Raw)'],
-            ['sensor.camera.semantic_segmentation', cc.CityScapesPalette,
-             'Camera Semantic Segmentation (CityScapes Palette)'],
-            ['sensor.lidar.ray_cast', None, 'Lidar (Ray-Cast)']]
+            # ['sensor.camera.depth', cc.Raw, 'Camera Depth (Raw)'],
+            # ['sensor.camera.depth', cc.Depth, 'Camera Depth (Gray Scale)'],
+            # ['sensor.camera.depth', cc.LogarithmicDepth, 'Camera Depth (Logarithmic Gray Scale)'],
+            # ['sensor.camera.semantic_segmentation', cc.Raw, 'Camera Semantic Segmentation (Raw)'],
+            # ['sensor.camera.semantic_segmentation', cc.CityScapesPalette,
+            #  'Camera Semantic Segmentation (CityScapes Palette)'],
+            # ['sensor.lidar.ray_cast', None, 'Lidar (Ray-Cast)'],
+            ]
         world = self._parent.get_world()
         bp_library = world.get_blueprint_library()
         for item in self.sensors:
@@ -626,27 +633,66 @@ class CameraManager(object):
             elif item[0].startswith('sensor.lidar'):
                 blp.set_attribute('range', '50')
             item.append(blp)
-        self.index = None
+        self.index = None # Sensor index
+
+        self.bbox_data = None # Bounding boxes
+    
+    def update_bounding_boxes(self, bbox_data):
+        """Update bounding boxes for a specific sensor type
+        Args:
+            bbox_data: Bounding boxes data (world coordinates)
+        """
+        self.bbox_data = bbox_data
+
+    def add_sensor(self, sensor_info):
+        """Add a sensor
+            sensor_info: defined from autonomous (behavior) agent
+        """
+        world = self._parent.get_world()
+        bp_library = world.get_blueprint_library()
+        for s in sensor_info:
+            if s['type'] not in ['sensor.camera.rgb', 'sensor.camera.depth', 'sensor.lidar.ray_cast']:
+                continue
+            sensor = [s['type'], cc.Raw if s['type'] == 'sensor.camera.rgb' else None, s['id']]
+            transform = (carla.Transform(carla.Location(x=s['x'], y=s['y'], z=s['z']), 
+                                         carla.Rotation(pitch=s['pitch'], yaw=s['yaw'], roll=s['roll'])), 
+                         carla.AttachmentType.Rigid)
+
+            blp = bp_library.find(sensor[0])
+            if sensor[0].startswith('sensor.camera'):
+                blp.set_attribute('image_size_x', str(s['width']))
+                blp.set_attribute('image_size_y', str(s['height']))
+                blp.set_attribute('fov', str(s['fov']))
+            elif sensor[0].startswith('sensor.lidar'):
+                blp.set_attribute('range', str(s['range']))
+                blp.set_attribute('rotation_frequency', str(s['rotation_frequency']))
+                blp.set_attribute('channels', str(s['channels']))
+                blp.set_attribute('upper_fov', str(s['upper_fov']))
+                blp.set_attribute('lower_fov', str(s['lower_fov']))
+                blp.set_attribute('points_per_second', str(s['points_per_second']))
+            sensor.append(blp)
+
+            self.sensors.append(sensor)
+            self._camera_transforms.append(transform)
 
     def toggle_camera(self):
         """Activate a camera"""
-        self.transform_index = (self.transform_index + 1) % len(self._camera_transforms)
+        self.index = (self.index + 1) % len(self._camera_transforms)
         self.set_sensor(self.index, notify=False, force_respawn=True)
 
     def set_sensor(self, index, notify=True, force_respawn=False):
         """Set a sensor"""
         index = index % len(self.sensors)
-        needs_respawn = True if self.index is None else (
-            force_respawn or (self.sensors[index][0] != self.sensors[self.index][0]))
+        needs_respawn = True if self.index is None else (force_respawn)
         if needs_respawn:
             if self.sensor is not None:
                 self.sensor.destroy()
                 self.surface = None
             self.sensor = self._parent.get_world().spawn_actor(
                 self.sensors[index][-1],
-                self._camera_transforms[self.transform_index][0],
+                self._camera_transforms[index][0],
                 attach_to=self._parent,
-                attachment_type=self._camera_transforms[self.transform_index][1])
+                attachment_type=self._camera_transforms[index][1])
 
             # We need to pass the lambda a weak reference to
             # self to avoid circular reference.
@@ -669,32 +715,155 @@ class CameraManager(object):
         """Render method"""
         if self.surface is not None:
             display.blit(self.surface, (0, 0))
+    
+    def project_to_camera_pygame(self, bbox):
+        """Transform bbox points from camera 3D coordinates to camera plane
+            bbox: bounding boxes (N,x) in camera 3D coordinates
+        """
+        if bbox is None:
+            return
+
+        def project_to_image(points_3d, K):
+            # Only project points with positive Z (in front of camera)
+            points_in_front = points_3d[points_3d[:, 2] > 0]
+            if len(points_in_front) == 0:
+                return None
+
+            # Convert to homogeneous coordinates
+            points_2d = np.dot(K, points_in_front.T)
+            
+            # Normalize by Z coordinate
+            points_2d = points_2d[:2] / points_2d[2]
+            return points_2d.T
+
+        def get_k_matrix(width,height,fov):
+            # (Intrinsic) K Matrix
+            K = np.identity(3)
+
+            # Calculate focal length and principal point
+            f = width / (2.0 * math.tan(fov * math.pi / 360.0))
+            cx = width / 2.0
+            cy = height / 2.0
+
+            # Construct K matrix
+            K = np.array([
+                [f, 0, cx],
+                [0, f, cy], 
+                [0, 0, 1]
+            ], dtype=np.float64)
+
+            return K
+        
+        # Obtain camera param
+        width = self.sensors[self.index][3].get_attribute('image_size_x').as_int()
+        height = self.sensors[self.index][3].get_attribute('image_size_y').as_int()
+        fov = int(self.sensors[self.index][3].get_attribute('fov').as_float())
+
+        # Compute camera intrinsic matrix
+        K = get_k_matrix(width,height,fov)
+        
+        image_boxes = []
+        # Project camera coordinates to image plane
+        for i, box in enumerate(bbox):
+        
+            # Carla axis --> cv2 axis
+            camera_bbox = np.zeros_like(box)
+            camera_bbox[:, 0] = box[:, 1]    # Right
+            camera_bbox[:, 1] = -box[:, 2]   # Down
+            camera_bbox[:, 2] = box[:, 0]    # Forward
+        
+            # Camera --> Image
+            image_box = project_to_image(camera_bbox,K)
+            if image_box is None:
+                continue
+            image_boxes.append(image_box)
+
+        return np.array(image_boxes)
+
+    def project_to_lidar_pygame(self, points):
+        """Transform lidar points from LiDAR 3D coordinates to pygame BEV 2D plane
+            lidar_data: lidar points (N,x) in LiDAR 3D coordinates
+        """
+        lidar_data = np.array(points[:, :2])
+        lidar_data *= min(self.hud.dim) / 100.0
+        lidar_data += (0.5 * self.hud.dim[0], 0.5 * self.hud.dim[1])
+        lidar_data = np.fabs(lidar_data)  # pylint: disable=assignment-from-no-return
+        lidar_data = lidar_data.astype(np.int32)
+        lidar_data = np.reshape(lidar_data, (-1, 2))
+        return lidar_data
+        
 
     @staticmethod
     def _parse_image(weak_self, image):
         self = weak_self()
+
+        # Obtain bounding box coords (world)
+        # First check if bbox_data exists
+        if self.bbox_data is None:
+            gt_bbox = None
+            det_bbox = None
+        else:
+            gt_bbox = self.bbox_data.get('gt_det', {}).get('det_boxes', None)
+            det_bbox = self.bbox_data.get('det', {}).get('det_boxes', None)        
+
         if not self:
             return
+        
+        inv_matrix = np.array(self.sensor.get_transform().get_inverse_matrix())
+        sensor_gt_box = None
+        sensor_det_box = None
+        if gt_bbox is not None:
+            reshape_gt_bbox = np.array(gt_bbox).reshape(-1, 3)
+            sensor_gt_box = Transform.transform_with_matrix(reshape_gt_bbox, inv_matrix) 
+            sensor_gt_box = np.array(sensor_gt_box).reshape(-1, gt_bbox.shape[1], 3)
+        if det_bbox is not None:
+            reshape_det_bbox = np.array(det_bbox).reshape(-1, 3)
+            sensor_det_box = Transform.transform_with_matrix(reshape_det_bbox, inv_matrix)
+            sensor_det_box = np.array(sensor_det_box).reshape(-1, det_bbox.shape[1], 3)
+
         if self.sensors[self.index][0].startswith('sensor.lidar'):
             points = np.frombuffer(image.raw_data, dtype=np.dtype('f4'))
             points = np.reshape(points, (int(points.shape[0] / 4), 4))
-            lidar_data = np.array(points[:, :2])
-            lidar_data *= min(self.hud.dim) / 100.0
-            lidar_data += (0.5 * self.hud.dim[0], 0.5 * self.hud.dim[1])
-            lidar_data = np.fabs(lidar_data)  # pylint: disable=assignment-from-no-return
-            lidar_data = lidar_data.astype(np.int32)
-            lidar_data = np.reshape(lidar_data, (-1, 2))
+            
+            lidar_data = self.project_to_lidar_pygame(points)
             lidar_img_size = (self.hud.dim[0], self.hud.dim[1], 3)
             lidar_img = np.zeros(lidar_img_size)
             lidar_img[tuple(lidar_data.T)] = (255, 255, 255)
             self.surface = pygame.surfarray.make_surface(lidar_img)
+            # Draw Bbox on image
+            if sensor_gt_box is not None:
+                reshape_sensor_gt_box = np.array(sensor_gt_box).reshape(-1, 3)
+                lidar_gt_boxes = self.project_to_lidar_pygame(reshape_sensor_gt_box)
+                lidar_gt_boxes = np.array(lidar_gt_boxes).reshape(-1, sensor_gt_box.shape[1], 2)
+                PyGameDrawing.draw_bbox_in_pygame(self.surface, lidar_gt_boxes, color=(0, 255, 0))  # Green for ground truth
+            if sensor_det_box is not None:
+                reshape_sensor_det_box = np.array(sensor_det_box).reshape(-1, 3)
+                lidar_det_boxes = self.project_to_lidar_pygame(reshape_sensor_det_box)
+                lidar_det_boxes = np.array(lidar_det_boxes).reshape(-1, sensor_det_box.shape[1], 2)
+                PyGameDrawing.draw_bbox_in_pygame(self.surface, lidar_det_boxes, color=(255, 0, 0))  # Red for detections
+
+
         else:
+            # Obtain bounging boxes in image plane            
+            camera_gt_boxes = self.project_to_camera_pygame(sensor_gt_box) 
+            camera_det_boxes = self.project_to_camera_pygame(sensor_det_box)
+
             image.convert(self.sensors[self.index][1])
             array = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
             array = np.reshape(array, (image.height, image.width, 4))
             array = array[:, :, :3]
             array = array[:, :, ::-1]
+
             self.surface = pygame.surfarray.make_surface(array.swapaxes(0, 1))
+            
+            # pdb.set_trace()
+
+            # Draw Bbox on image
+            if camera_gt_boxes is not None:
+                PyGameDrawing.draw_bbox_in_pygame(self.surface, camera_gt_boxes, color=(0, 255, 0))  # Green for ground truth
+            if camera_det_boxes is not None:
+                PyGameDrawing.draw_bbox_in_pygame(self.surface, camera_det_boxes, color=(255, 0, 0))  # Red for detections
+
         if self.recording:
             image.save_to_disk('_out/%08d' % image.frame)
 
@@ -750,6 +919,8 @@ def game_loop(args):
             agent.follow_speed_limits(True)
         elif args.agent == "Behavior":
             agent = BehaviorAgent(world.player, behavior=args.behavior)
+        
+        world.camera_manager.add_sensor(agent.sensors())
 
         # Set the agent destination
         spawn_points = world.map.get_spawn_points()
@@ -766,12 +937,15 @@ def game_loop(args):
                 world.world.tick()
             else:
                 world.world.wait_for_tick()
-            if controller.parse_events():
+            if controller.parse_events(world):
                 return
 
             world.tick(clock)
             world.render(display)
             pygame.display.flip()
+
+            # Get bounding boxes from agent
+            world.camera_manager.update_bounding_boxes(agent.bbox)
 
             if agent.done():
                 if args.loop:
