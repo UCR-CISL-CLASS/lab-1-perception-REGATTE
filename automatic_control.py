@@ -22,6 +22,8 @@ import re
 import sys
 import weakref
 
+from detector import Detector
+
 try:
     import pygame
     from pygame.locals import KMOD_CTRL
@@ -141,6 +143,7 @@ class World(object):
         self.world.on_tick(hud.on_world_tick)
         self.recording_enabled = False
         self.recording_start = 0
+        self.detector = Detector()
 
     def restart(self, args):
         """Restart the world"""
@@ -212,6 +215,17 @@ class World(object):
     def tick(self, clock):
         """Method for every tick"""
         self.hud.tick(self, clock)
+        # Capture camera frame for detection
+        sensor_data = {
+            'Center': self.camera_manager.get_sensor_data('Center')
+        }
+        
+        # Run detection and get bounding boxes
+        detections = self.detector.detect(sensor_data)
+        
+        # Update camera manager with bounding boxes for visualization
+        if 'det_boxes' in detections:
+            self.camera_manager.update_bounding_boxes(detections['det_boxes'])
 
     def render(self, display):
         """Render world"""
@@ -643,6 +657,14 @@ class CameraManager(object):
             bbox_data: Bounding boxes data (world coordinates)
         """
         self.bbox_data = bbox_data
+    
+    def get_sensor_data(self, sensor_id):
+        if sensor_id == 'Center':
+            if self.sensor is None:
+                return None
+        image_data = self.surface
+        frame_id = pygame.time.get_ticks()
+        return (frame_id, image_data) 
 
     def add_sensor(self, sensor_info):
         """Add a sensor
@@ -715,6 +737,10 @@ class CameraManager(object):
         """Render method"""
         if self.surface is not None:
             display.blit(self.surface, (0, 0))
+
+            if self.bbox_data is not None:
+                for bbox in self.bbox_data:
+                    pygame.draw.polygon(display, (255, 0, 0), [(p[0], p[1]) for p in bbox], 2)
     
     def project_to_camera_pygame(self, bbox):
         """Transform bbox points from camera 3D coordinates to camera plane
@@ -796,6 +822,10 @@ class CameraManager(object):
     @staticmethod
     def _parse_image(weak_self, image):
         self = weak_self()
+        if not self:
+            return
+
+        self.latest_data = (image.frame, image)
 
         # Obtain bounding box coords (world)
         # First check if bbox_data exists
@@ -803,11 +833,13 @@ class CameraManager(object):
             gt_bbox = None
             det_bbox = None
         else:
-            gt_bbox = self.bbox_data.get('gt_det', {}).get('det_boxes', None)
-            det_bbox = self.bbox_data.get('det', {}).get('det_boxes', None)        
-
-        if not self:
-            return
+            # Handle bbox data as dictionary or array
+            if isinstance(self.bbox_data, dict):
+                gt_bbox = self.bbox_data.get('gt_det', {}).get('det_boxes', None)
+                det_bbox = self.bbox_data.get('det', {}).get('det_boxes', None)
+            else:
+                gt_bbox = self.bbox_data 
+                det_bbox = None   
         
         inv_matrix = np.array(self.sensor.get_transform().get_inverse_matrix())
         sensor_gt_box = None
@@ -816,10 +848,13 @@ class CameraManager(object):
             reshape_gt_bbox = np.array(gt_bbox).reshape(-1, 3)
             sensor_gt_box = Transform.transform_with_matrix(reshape_gt_bbox, inv_matrix) 
             sensor_gt_box = np.array(sensor_gt_box).reshape(-1, gt_bbox.shape[1], 3)
+            print("Ground truth box:", gt_bbox)
         if det_bbox is not None:
             reshape_det_bbox = np.array(det_bbox).reshape(-1, 3)
             sensor_det_box = Transform.transform_with_matrix(reshape_det_bbox, inv_matrix)
             sensor_det_box = np.array(sensor_det_box).reshape(-1, det_bbox.shape[1], 3)
+            print("Detection box:", sensor_det_box)
+
 
         if self.sensors[self.index][0].startswith('sensor.lidar'):
             points = np.frombuffer(image.raw_data, dtype=np.dtype('f4'))
@@ -841,7 +876,6 @@ class CameraManager(object):
                 lidar_det_boxes = self.project_to_lidar_pygame(reshape_sensor_det_box)
                 lidar_det_boxes = np.array(lidar_det_boxes).reshape(-1, sensor_det_box.shape[1], 2)
                 PyGameDrawing.draw_bbox_in_pygame(self.surface, lidar_det_boxes, color=(255, 0, 0))  # Red for detections
-
 
         else:
             # Obtain bounging boxes in image plane            
@@ -908,6 +942,10 @@ def game_loop(args):
         hud = HUD(args.width, args.height)
         world = World(client.get_world(), hud, args)
         controller = KeyboardControl(world)
+
+        # added detector class
+        detector = Detector()
+
         if args.agent == "Basic":
             agent = BasicAgent(world.player, 30)
             agent.follow_speed_limits(True)
@@ -943,6 +981,11 @@ def game_loop(args):
             world.tick(clock)
             world.render(display)
             pygame.display.flip()
+
+            # Retrieve sensor data and run detection
+            sensor_data = {sensor['id']: world.camera_manager.get_sensor_data(sensor['id']) 
+                           for sensor in detector.sensors()}
+            detections = detector.detect(sensor_data)
 
             # Get bounding boxes from agent
             world.camera_manager.update_bounding_boxes(agent.bbox)

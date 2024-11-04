@@ -2,3 +2,11 @@
 # EE260C_LAB1: Perception
 
 Please refer to the instructions [here](https://docs.google.com/document/d/1BvQ9ztEvxDwsHv-RWEy2EOA7kdAonzdkbJIuQSB1nJI/edit?usp=sharing)
+
+
+## Steps to run code for all parts
+
+1. launch carla virtual environment
+2. launch carla sim `./CarlaUE4.sh `
+3. in a new terminal run (with the venv) `python3 generate_traffic.py`
+4. in a new terminal run (with the venv) `python3 automatic_control.py`
